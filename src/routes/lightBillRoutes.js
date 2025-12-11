@@ -4,6 +4,7 @@ import Lease from "../models/Lease.js";
 import Room from "../models/Room.js";
 import Tenant from "../models/Tenant.js";
 import { authRequired } from "../middleware/authMiddleware.js";
+import { createPaymentNotification } from "../services/notificationService.js";
 
 const router = express.Router();
 
@@ -88,7 +89,7 @@ router.post("/", authRequired, async (req, res) => {
         tenant: tenant, 
         lease: lease 
       }).sort({ createdAt: -1 });
-
+      
       if (latestInvoice) {
         // Use the same period and dates as the latest invoice if not provided
         if (!periodFrom) periodFrom = latestInvoice.periodFrom;
@@ -282,6 +283,13 @@ router.post("/:id/pay", authRequired, async (req, res) => {
     await lightBill.populate("room", "name floor");
     await lightBill.populate("lease", "startDate endDate rentPerMonth");
 
+    // Create notification for payment
+    try {
+      await createPaymentNotification(lightBill, "lightBill");
+    } catch (notificationError) {
+      console.error("Failed to create payment notification:", notificationError.message);
+    }
+
     res.status(200).json({ 
       success: true,
       message: "Payment recorded successfully",
@@ -299,15 +307,6 @@ router.post("/:id/pay", authRequired, async (req, res) => {
 // PUT /api/light-bills/:id
 router.put("/:id", authRequired, async (req, res) => {
   try {
-    const lightBill = await LightBill.findById(req.params.id);
-    
-    if (!lightBill) {
-      return res.status(404).json({ 
-        success: false,
-        message: "Light bill not found" 
-      });
-    }
-
     const {
       periodFrom,
       periodTo,
@@ -320,56 +319,13 @@ router.put("/:id", authRequired, async (req, res) => {
       notes,
     } = req.body;
 
-    // Validation for dates if provided
-    if (periodFrom && periodTo && new Date(periodFrom) >= new Date(periodTo)) {
-      return res.status(400).json({ 
+    const lightBill = await LightBill.findById(req.params.id);
+    
+    if (!lightBill) {
+      return res.status(404).json({ 
         success: false,
-        message: "Period from date must be before period to date" 
+        message: "Light bill not found" 
       });
-    }
-
-    if (issueDate && dueDate && new Date(issueDate) >= new Date(dueDate)) {
-      return res.status(400).json({ 
-        success: false,
-        message: "Issue date must be before due date" 
-      });
-    }
-
-    // Validation for numbers if provided
-    if (unitsConsumed !== undefined && (unitsConsumed <= 0)) {
-      return res.status(400).json({ 
-        success: false,
-        message: "Units consumed must be a positive number" 
-      });
-    }
-
-    if (ratePerUnit !== undefined && (ratePerUnit <= 0)) {
-      return res.status(400).json({ 
-        success: false,
-        message: "Rate per unit must be a positive number" 
-      });
-    }
-
-    // Check for duplicate light bill if period is being updated
-    if ((periodFrom && periodTo) || (periodFrom && !periodTo) || (!periodFrom && periodTo)) {
-      const fromDate = periodFrom ? new Date(periodFrom) : lightBill.periodFrom;
-      const toDate = periodTo ? new Date(periodTo) : lightBill.periodTo;
-      
-      const existingBill = await LightBill.findOne({
-        room: lightBill.room,
-        tenant: lightBill.tenant,
-        lease: lightBill.lease,
-        periodFrom: { $eq: fromDate },
-        periodTo: { $eq: toDate },
-        _id: { $ne: req.params.id }
-      });
-      
-      if (existingBill) {
-        return res.status(400).json({ 
-          success: false,
-          message: "Light bill for this period already exists for this room, tenant, and lease" 
-        });
-      }
     }
 
     // Update fields if provided
@@ -433,11 +389,11 @@ router.delete("/:id", authRequired, async (req, res) => {
       });
     }
 
-    await LightBill.findByIdAndDelete(req.params.id);
-    
-    res.status(200).json({ 
+    await lightBill.remove();
+
+    res.status(200).json({
       success: true,
-      message: "Light bill deleted successfully" 
+      message: "Light bill deleted successfully"
     });
   } catch (error) {
     console.error("Light bill deletion error:", error.message);

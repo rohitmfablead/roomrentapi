@@ -37,8 +37,21 @@ router.get("/", authRequired, async (req, res) => {
     // 2. Active Tenants
     const activeTenants = await Tenant.countDocuments({ status: "active" });
 
-    // 3. This Month's Collection (Payments)
-    const thisMonthPayments = await Payment.aggregate([
+    // 3. This Month's Collection (Payments) - Enhanced breakdown
+    // Get all invoices for the current month
+    const currentMonthInvoices = await Invoice.find({
+      periodFrom: { $lte: endOfMonth },
+      periodTo: { $gte: startOfMonth }
+    });
+    
+    // Calculate total expected from invoices for the month
+    let totalExpectedFromInvoices = 0;
+    currentMonthInvoices.forEach(invoice => {
+      totalExpectedFromInvoices += invoice.totalAmount || 0;
+    });
+    
+    // Get actual payments received for invoices in the current month
+    const thisMonthInvoicePayments = await Payment.aggregate([
       {
         $match: {
           date: {
@@ -50,12 +63,60 @@ router.get("/", authRequired, async (req, res) => {
       {
         $group: {
           _id: null,
-          total: { $sum: "$amount" }
+          total: { $sum: "$amount" },
+          count: { $sum: 1 }
         }
       }
     ]);
-
-    const thisMonthCollection = thisMonthPayments.length > 0 ? thisMonthPayments[0].total : 0;
+    
+    const invoicePaymentsReceived = thisMonthInvoicePayments.length > 0 ? thisMonthInvoicePayments[0].total : 0;
+    const invoicePaymentCount = thisMonthInvoicePayments.length > 0 ? thisMonthInvoicePayments[0].count : 0;
+    
+    // Get light bills for the current month
+    const currentMonthLightBills = await LightBill.find({
+      issueDate: {
+        $gte: startOfMonth,
+        $lte: endOfMonth
+      }
+    });
+    
+    // Calculate total expected from light bills for the month
+    let totalExpectedFromLightBills = 0;
+    currentMonthLightBills.forEach(bill => {
+      totalExpectedFromLightBills += bill.totalAmount || 0;
+    });
+    
+    // Get actual payments received for light bills in the current month
+    const thisMonthLightBillPayments = await LightBill.aggregate([
+      {
+        $match: {
+          updatedAt: {
+            $gte: startOfMonth,
+            $lte: endOfMonth
+          },
+          paidAmount: { $gt: 0 }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: "$paidAmount" },
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+    
+    const lightBillPaymentsReceived = thisMonthLightBillPayments.length > 0 ? thisMonthLightBillPayments[0].total : 0;
+    const lightBillPaymentCount = thisMonthLightBillPayments.length > 0 ? thisMonthLightBillPayments[0].count : 0;
+    
+    // Total collection includes both invoice and light bill payments
+    const thisMonthCollection = invoicePaymentsReceived + lightBillPaymentsReceived;
+    
+    // Total expected includes both invoices and light bills
+    const totalExpectedCollection = totalExpectedFromInvoices + totalExpectedFromLightBills;
+    
+    // Payment count
+    const totalPaymentsCount = invoicePaymentCount + lightBillPaymentCount;
 
     // 4. Overdue Invoices
     const overdueInvoices = await Invoice.countDocuments({ 
@@ -154,7 +215,8 @@ router.get("/", authRequired, async (req, res) => {
     });
 
     // 14. Monthly collections for the last 6 months (chart data)
-    const monthlyCollections = await Payment.aggregate([
+    // Get invoice payments
+    const monthlyInvoicePayments = await Payment.aggregate([
       {
         $match: {
           date: { $gte: sixMonthsAgo }
@@ -175,14 +237,146 @@ router.get("/", authRequired, async (req, res) => {
       }
     ]);
 
-    // Format the data for charts
-    const formattedCollections = monthlyCollections.map(item => ({
-      month: `${item._id.month}/${item._id.year}`,
-      amount: item.total,
-      transactions: item.count
-    }));
+    // Get light bill payments (based on paidAmount and updatedAt)
+    const monthlyLightBillPayments = await LightBill.aggregate([
+      {
+        $match: {
+          updatedAt: { $gte: sixMonthsAgo },
+          paidAmount: { $gt: 0 }
+        }
+      },
+      {
+        $group: {
+          _id: {
+            year: { $year: "$updatedAt" },
+            month: { $month: "$updatedAt" }
+          },
+          total: { $sum: "$paidAmount" },
+          count: { $sum: 1 }
+        }
+      },
+      {
+        $sort: { "_id.year": 1, "_id.month": 1 }
+      }
+    ]);
 
-    // 15. Room status distribution (chart data)
+    // Combine invoice and light bill payments by month
+    const monthlyCollectionsMap = new Map();
+    
+    // Add invoice payments to map
+    monthlyInvoicePayments.forEach(item => {
+      const key = `${item._id.year}-${item._id.month}`;
+      if (!monthlyCollectionsMap.has(key)) {
+        monthlyCollectionsMap.set(key, {
+          year: item._id.year,
+          month: item._id.month,
+          revenue: 0,
+          expenses: 0,
+          count: 0
+        });
+      }
+      const existing = monthlyCollectionsMap.get(key);
+      existing.revenue += item.total;
+      existing.count += item.count;
+    });
+    
+    // Add light bill payments to map
+    monthlyLightBillPayments.forEach(item => {
+      const key = `${item._id.year}-${item._id.month}`;
+      if (!monthlyCollectionsMap.has(key)) {
+        monthlyCollectionsMap.set(key, {
+          year: item._id.year,
+          month: item._id.month,
+          revenue: 0,
+          expenses: 0,
+          count: 0
+        });
+      }
+      const existing = monthlyCollectionsMap.get(key);
+      existing.expenses += item.total;
+      existing.count += item.count;
+    });
+    
+    // Convert map to array and format for charts
+    const formattedCollections = Array.from(monthlyCollectionsMap.values()).map(item => ({
+      month: `${item.month}/${item.year}`,
+      revenue: item.revenue,
+      expenses: item.expenses,
+      profit: item.revenue - item.expenses,
+      transactions: item.count
+    })).sort((a, b) => {
+      const [aMonth, aYear] = a.month.split('/').map(Number);
+      const [bMonth, bYear] = b.month.split('/').map(Number);
+      return new Date(aYear, aMonth - 1) - new Date(bYear, bMonth - 1);
+    });
+
+    // 15. Month-wise payment details
+    // Get detailed payment information for the current month
+    const thisMonthPaymentDetails = await Payment.find({
+      date: {
+        $gte: startOfMonth,
+        $lte: endOfMonth
+      }
+    })
+      .populate("tenant", "fullName")
+      .populate("invoice", "periodFrom periodTo totalAmount")
+      .sort({ date: -1 });
+
+    // Get detailed light bill payment information for the current month
+    const thisMonthLightBillDetails = await LightBill.find({
+      updatedAt: {
+        $gte: startOfMonth,
+        $lte: endOfMonth
+      },
+      paidAmount: { $gt: 0 }
+    })
+      .populate("tenant", "fullName")
+      .populate("room", "name")
+      .sort({ updatedAt: -1 });
+
+    // Format payment details
+    const formattedPaymentDetails = [
+      ...thisMonthPaymentDetails.map(payment => ({
+        _id: payment._id,
+        type: "invoice",
+        tenant: payment.tenant?.fullName || "Unknown Tenant",
+        amount: payment.amount,
+        date: payment.date,
+        mode: payment.mode,
+        period: payment.invoice ? 
+          `${new Date(payment.invoice.periodFrom).toLocaleDateString()} - ${new Date(payment.invoice.periodTo).toLocaleDateString()}` : 
+          "N/A"
+      })),
+      ...thisMonthLightBillDetails.map(bill => ({
+        _id: bill._id,
+        type: "lightBill",
+        tenant: bill.tenant?.fullName || "Unknown Tenant",
+        amount: bill.paidAmount,
+        date: bill.updatedAt,
+        mode: "Cash",
+        period: bill.periodFrom ? 
+          `${new Date(bill.periodFrom).toLocaleDateString()} - ${new Date(bill.periodTo).toLocaleDateString()}` : 
+          "N/A"
+      }))
+    ].sort((a, b) => new Date(b.date) - new Date(a.date));
+
+    // 16. Enhanced Overview with payment breakdown
+    // Count total payments for the month
+    const totalMonthlyPayments = formattedPaymentDetails.length;
+    
+    // Sum up invoice payments and light bill payments separately
+    let invoicePaymentsTotal = 0;
+    let lightBillPaymentsTotal = 0;
+    
+    formattedPaymentDetails.forEach(payment => {
+      if (payment.type === "invoice") {
+        invoicePaymentsTotal += payment.amount;
+      } else if (payment.type === "lightBill") {
+        lightBillPaymentsTotal += payment.amount;
+      }
+    });
+
+    // 17. Room status distribution (chart data)
     const roomStatusDistribution = await Room.aggregate([
       {
         $group: {
@@ -192,7 +386,7 @@ router.get("/", authRequired, async (req, res) => {
       }
     ]);
 
-    // 16. Tenant status distribution (chart data)
+    // 18. Tenant status distribution (chart data)
     const tenantStatusDistribution = await Tenant.aggregate([
       {
         $group: {
@@ -202,7 +396,7 @@ router.get("/", authRequired, async (req, res) => {
       }
     ]);
 
-    // 17. Detailed room information
+    // 19. Detailed room information
     const detailedRooms = await Room.find()
       .populate({
         path: "currentLease",
@@ -211,14 +405,14 @@ router.get("/", authRequired, async (req, res) => {
         ]
       });
 
-    // 18. Recent Light Bills (last 5)
+    // 20. Recent Light Bills (last 5)
     const recentLightBills = await LightBill.find()
       .sort({ createdAt: -1 })
       .limit(5)
       .populate("tenant", "fullName")
       .populate("room", "name");
 
-    // 19. Light Bill Summary
+    // 21. Light Bill Summary
     const allLightBills = await LightBill.find();
     let totalLightBillAmount = 0;
     let totalLightBillPaid = 0;
@@ -239,11 +433,33 @@ router.get("/", authRequired, async (req, res) => {
           activeTenants,
           activeLeases,
           upcomingLeases,
-          thisMonthCollection,
+          thisMonthCollection: {
+            collected: thisMonthCollection,
+            expected: totalExpectedCollection,
+            percentage: totalExpectedCollection > 0 ? Math.round((thisMonthCollection / totalExpectedCollection) * 100) : 0,
+            from: {
+              invoices: {
+                collected: invoicePaymentsReceived,
+                expected: totalExpectedFromInvoices,
+                count: invoicePaymentCount
+              },
+              lightBills: {
+                collected: lightBillPaymentsReceived,
+                expected: totalExpectedFromLightBills,
+                count: lightBillPaymentCount
+              }
+            }
+          },
           thisMonthExpenses,
           revenueVsExpenses,
           overdueInvoices,
-          pendingLightBills
+          pendingLightBills,
+          // Enhanced payment breakdown
+          monthlyPaymentBreakdown: {
+            totalPayments: totalMonthlyPayments,
+            invoicePayments: invoicePaymentsTotal,
+            lightBillPayments: lightBillPaymentsTotal
+          }
         },
         // Room availability breakdown
         roomAvailability: roomAvailabilityObj,
@@ -265,6 +481,8 @@ router.get("/", authRequired, async (req, res) => {
           recentPayments,
           recentLightBills
         },
+        // Month-wise payment details
+        thisMonthPayments: formattedPaymentDetails,
         // Chart data
         charts: {
           monthlyCollections: formattedCollections,

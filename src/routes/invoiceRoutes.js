@@ -4,6 +4,7 @@ import Lease from "../models/Lease.js";
 import Payment from "../models/Payment.js";
 import Settings from "../models/Settings.js";
 import { authRequired } from "../middleware/authMiddleware.js";
+import { createPaymentNotification, createInvoiceNotification } from "../services/notificationService.js";
 
 const router = express.Router();
 
@@ -44,15 +45,15 @@ router.get("/", authRequired, async (req, res) => {
     res.status(200).json({
       success: true,
       count: invoices.length,
-      totals: {
+      data: invoices,
+      summary: {
         totalExpected,
         totalCollected,
         totalPending,
       },
-      data: invoices,
     });
   } catch (error) {
-    console.error("Error fetching invoices:", error.message);
+    console.error("Invoice fetch error:", error.message);
     res.status(500).json({
       success: false,
       message: "Server error while fetching invoices",
@@ -60,38 +61,41 @@ router.get("/", authRequired, async (req, res) => {
   }
 });
 
-// POST /api/invoices/generate-monthly  (manual trigger)
+// POST /api/invoices/generate-monthly
 router.post("/generate-monthly", authRequired, async (req, res) => {
   try {
     const today = new Date();
-    const month = today.getMonth();
     const year = today.getFullYear();
+    const month = today.getMonth() + 1; // JavaScript months are 0-indexed
 
+    const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
+    const lastDay = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+
+    // Find all active leases
     const leases = await Lease.find({ status: "active" }).populate(
-      "room tenant"
+      "tenant room",
+      "fullName phone name floor"
     );
 
     const created = [];
 
     for (const lease of leases) {
-      // simple assumption: full month ka invoice
-      const periodFrom = new Date(year, month, 1);
-      const periodTo = new Date(year, month + 1, 0);
-
-      // Check for existing invoice for this lease and period
-      const exists = await Invoice.findOne({
+      // Check if invoice already exists for this lease and period
+      const existingInvoice = await Invoice.findOne({
         lease: lease._id,
-        periodFrom,
-        periodTo,
+        periodFrom: firstDay,
+        periodTo: lastDay,
       });
 
-      if (exists) {
+      if (existingInvoice) {
         console.log(
-          `Invoice already exists for lease ${lease._id} for period ${periodFrom} to ${periodTo}`
+          `Invoice already exists for lease ${lease._id} for period ${firstDay} to ${lastDay}`
         );
         continue;
       }
 
+      const periodFrom = firstDay;
+      const periodTo = lastDay;
       const issueDate = today;
       const dueDate = new Date(year, month, lease.billingDay || 1);
 
@@ -112,6 +116,13 @@ router.post("/generate-monthly", authRequired, async (req, res) => {
       await invoice.populate("lease", "startDate endDate rentPerMonth");
 
       created.push(invoice);
+
+      // Create notification for new invoice
+      try {
+        await createInvoiceNotification(invoice);
+      } catch (notificationError) {
+        console.error("Failed to create invoice notification:", notificationError.message);
+      }
     }
 
     res.status(201).json({
@@ -183,6 +194,14 @@ router.post("/:id/pay", authRequired, async (req, res) => {
     // Populate references
     await payment.populate("tenant", "fullName phone");
     await payment.populate("lease", "startDate endDate rentPerMonth");
+    await payment.populate("invoice", "periodFrom periodTo baseAmount totalAmount status");
+
+    // Create notification for payment
+    try {
+      await createPaymentNotification(payment, "invoice");
+    } catch (notificationError) {
+      console.error("Failed to create payment notification:", notificationError.message);
+    }
 
     res.status(201).json({
       success: true,
@@ -235,23 +254,17 @@ router.post("/recalculate-late-fees", authRequired, async (req, res) => {
         }
       }
 
-      invoice.lateFee = lateFee;
-      invoice.totalAmount = invoice.baseAmount + lateFee;
-
-      if (invoice.paidAmount >= invoice.totalAmount) {
-        invoice.status = "paid";
-      } else if (today > invoice.dueDate) {
-        invoice.status = invoice.paidAmount > 0 ? "partially_paid" : "overdue";
+      if (lateFee !== invoice.lateFee) {
+        invoice.lateFee = lateFee;
+        invoice.totalAmount = invoice.baseAmount + lateFee;
+        await invoice.save();
+        updatedCount++;
       }
-
-      await invoice.save();
-      updatedCount++;
     }
 
-    res.json({
+    res.status(200).json({
       success: true,
-      message: "Late fees recalculated successfully",
-      data: { updatedCount },
+      message: `Late fees recalculated for ${updatedCount} invoices`,
     });
   } catch (error) {
     console.error("Late fee recalculation error:", error.message);

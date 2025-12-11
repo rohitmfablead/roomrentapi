@@ -2,9 +2,21 @@ import mongoose from "mongoose";
 
 const paymentSchema = new mongoose.Schema(
   {
-    invoice: { type: mongoose.Schema.Types.ObjectId, ref: "Invoice", required: true },
-    lease: { type: mongoose.Schema.Types.ObjectId, ref: "Lease", required: true },
-    tenant: { type: mongoose.Schema.Types.ObjectId, ref: "Tenant", required: true },
+    invoice: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Invoice",
+      required: true,
+    },
+    lease: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Lease",
+      required: true,
+    },
+    tenant: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Tenant",
+      required: true,
+    },
 
     amount: { type: Number, required: true },
     date: { type: Date, required: true },

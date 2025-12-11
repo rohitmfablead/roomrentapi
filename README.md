@@ -89,6 +89,20 @@ All entities include duplicate prevention mechanisms:
 - `PUT /api/light-bills/:id` - Update a light bill
 - `DELETE /api/light-bills/:id` - Delete a light bill
 
+### Payments
+- `GET /api/payments` - Get all payments grouped by tenant with filtering options (tenantId, leaseId, invoiceId, date range, mode). Includes both invoice and light bill payments.
+- `GET /api/payments/:id` - Get payment details by ID with context about when and why the payment was made. Works for both invoice and light bill payments.
+- `GET /api/payments/tenant/:tenantId` - Get complete payment history for a tenant including both invoice and light bill payments.
+
+### Notifications
+- `GET /api/notifications` - Get all notifications for the logged-in user with pagination and filtering options
+- `GET /api/notifications/:id` - Get a specific notification by ID
+- `PUT /api/notifications/:id/read` - Mark a notification as read
+- `PUT /api/notifications/read-all` - Mark all notifications as read
+- `DELETE /api/notifications/:id` - Delete a notification
+- `DELETE /api/notifications` - Delete all read notifications
+- `GET /api/notifications/unread-count` - Get count of unread notifications
+
 ### Settings
 - `GET /api/settings` - Get application settings
 - `PUT /api/settings` - Update application settings
@@ -132,7 +146,7 @@ The unified dashboard API provides all the following key metrics in a single end
 
 The dashboard API returns a structured response with all data organized in logical sections:
 
-```javascript
+```
 {
   success: true,
   data: {
@@ -282,6 +296,20 @@ Returns all rooms a specific tenant has had leases for, sorted by lease start da
     perDayAmount: Number,
     percentage: Number
   }
+}
+```
+
+### Notification
+```javascript
+{
+  title: String,           // Notification title
+  message: String,         // Notification message
+  type: String,            // info, warning, success, error, payment, invoice, maintenance
+  recipient: ObjectId,     // Reference to User
+  relatedEntity: ObjectId, // Reference to related entity (Payment, Invoice, Lease, etc.)
+  relatedEntityType: String,// Type of related entity
+  isRead: Boolean,         // Whether notification has been read
+  priority: String         // low, medium, high, urgent
 }
 ```
 

@@ -10,6 +10,8 @@ import leaseRoutes from "./routes/leaseRoutes.js";
 import invoiceRoutes from "./routes/invoiceRoutes.js";
 import settingsRoutes from "./routes/settingsRoutes.js";
 import lightBillRoutes from "./routes/lightBillRoutes.js";
+import paymentRoutes from "./routes/paymentRoutes.js";
+import notificationRoutes from "./routes/notificationRoutes.js";
 import dashboardRoutes from "./routes/dashboardRoutes.js";
 import { scheduleMonthlyInvoiceGeneration } from "./services/invoiceCronService.js";
 
@@ -28,6 +30,8 @@ app.use("/api/leases", leaseRoutes);
 app.use("/api/invoices", invoiceRoutes);
 app.use("/api/settings", settingsRoutes);
 app.use("/api/light-bills", lightBillRoutes);
+app.use("/api/payments", paymentRoutes);
+app.use("/api/notifications", notificationRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 
 // start
