@@ -68,9 +68,6 @@ router.post("/generate-monthly", authRequired, async (req, res) => {
     const year = today.getFullYear();
     const month = today.getMonth() + 1; // JavaScript months are 0-indexed
 
-    const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
-    const lastDay = new Date(today.getFullYear(), today.getMonth() + 1, 0);
-
     // Find all active leases
     const leases = await Lease.find({ status: "active" }).populate(
       "tenant room",
@@ -80,22 +77,30 @@ router.post("/generate-monthly", authRequired, async (req, res) => {
     const created = [];
 
     for (const lease of leases) {
+      // Calculate periodFrom based on lease startDate
+      const periodFrom = new Date(lease.startDate);
+      // Set periodTo to 30 days after periodFrom
+      const periodTo = new Date(periodFrom);
+      periodTo.setDate(periodTo.getDate() + 30);
+      
+      // Normalize dates to remove time component
+      periodFrom.setHours(0, 0, 0, 0);
+      periodTo.setHours(0, 0, 0, 0);
+      
       // Check if invoice already exists for this lease and period
       const existingInvoice = await Invoice.findOne({
         lease: lease._id,
-        periodFrom: firstDay,
-        periodTo: lastDay,
+        periodFrom: periodFrom,
+        periodTo: periodTo,
       });
 
       if (existingInvoice) {
         console.log(
-          `Invoice already exists for lease ${lease._id} for period ${firstDay} to ${lastDay}`
+          `Invoice already exists for lease ${lease._id} for period ${periodFrom} to ${periodTo}`
         );
         continue;
       }
 
-      const periodFrom = firstDay;
-      const periodTo = lastDay;
       const issueDate = today;
       const dueDate = new Date(year, month, lease.billingDay || 1);
 
